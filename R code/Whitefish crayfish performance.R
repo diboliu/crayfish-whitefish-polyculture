@@ -3,66 +3,56 @@ library(ggplot2)
 library(readxl)
 library(ggpubr)
 library(readr)
+library(tidyverse)
 
 # Experiment 1
 Crayfish_feed_difference <- read_excel("Crayfish feed difference.xlsx")
 View(Crayfish_feed_difference)  
 
-glm_carbon <- glm(SGR ~ Carbon, data = Crayfish_feed_difference, family = gaussian)
-summary(glm_carbon)
-library(car)
-Anova(glm_carbon)
-
-glm_nitrogen <- glm(SGR ~ Nitrogen, data = Crayfish_feed_difference, family = gaussian)
-summary(glm_nitrogen)
-Anova(glm_nitrogen)
-
-glm_cn <- glm(SGR ~ Carbon + Nitrogen, data = Crayfish_feed_difference, family = gaussian)
-summary(glm_cn)
-Anova(glm_cn)
-
-# Compare SGR or tank gain
-library(stats)
-
 #normality test
-split_df <- split(Crayfish_feed_difference, Crayfish_feed_difference$Feed)
-shapiro_results_SGR <- lapply(split_df, function(sub_df) {
-  shapiro.test(sub_df[["SGR"]])
-})
-print(shapiro_results_SGR)
+shapiro.test(Crayfish_feed_difference$Survival)
+shapiro.test(Crayfish_feed_difference$SGR)
 
-shapiro_results_Survival <- lapply(split_df, function(sub_df) {
-  shapiro.test(sub_df[["Survival"]])
-})
-print(shapiro_results_Survival)
-
-
-#test homogeneity of variances
-library(car)
-levene_result_SGR <- leveneTest(SGR ~ Feed, data = Crayfish_feed_difference)
-print(levene_result_SGR)
-
-levene_result_Survival <- leveneTest(Survival ~ Feed, data = Crayfish_feed_difference)
-print(levene_result_Survival)
-
-kruskal.test(Survival ~ Feed, data = Crayfish_feed_difference)
+# Test the effect of feed on individual survival (live=1, dead=0, individual crayfish as observation)
+Crayfish_feed_difference_individual_mort <- read_excel("Crayfish feed difference individual mortality.xlsx")
+View(Crayfish_feed_difference_individual_mort)  
+Crayfish_feed_difference_individual_mort$Feed <- as.factor(Crayfish_feed_difference_individual_mort$Feed)
+library(lme4)
+Crayfish_feed_difference$Feed <- as.factor(Crayfish_feed_difference$Feed)
+glmm_ind_sur <- glmer(live ~ Feed + (1 | Tank), data = Crayfish_feed_difference_individual_mort, family = binomial(link = "logit"))
+summary(glmm_ind_sur)
+Anova(glmm_ind_sur)
 
 
+#test the effect of feed on SGR (aquarium as observation)
+# Fit Gamma distribution to the data
+install.packages("MASS")
+library(MASS)
+fit <- fitdistr(Crayfish_feed_difference$SGR, "gamma")
+print(fit)
 
-#welch Anova SGR
-welch_result <- oneway.test(SGR ~ Feed, data = Crayfish_feed_difference, var.equal = FALSE)
-print(welch_result)
+shape_param <- fit$estimate["shape"]
+rate_param <- fit$estimate["rate"]
 
-# post-hoc test for welch Anova
-install.packages("rstatix")
+# Kolmogorov-Smirnov test
+ks_test_result <- ks.test(Crayfish_feed_difference$SGR, "pgamma", shape = shape_param, rate = rate_param)
+print(ks_test_result)
 
-# Load the rstatix package
-library(rstatix)
 
-welch_post <- games_howell_test(Crayfish_feed_difference, SGR ~ Feed, conf.level = 0.95, detailed = T)
-print(welch_post, n=Inf)
+Crayfish_feed_difference$Feed <- as.factor(Crayfish_feed_difference$Feed)
+glm_SGR <- glm(SGR ~ Feed, data = Crayfish_feed_difference, family = Gamma (link = "log"))
+summary(glm_SGR)
+Anova(glm_SGR)
 
-# plot SGR vs feed, carbon or nitrogen
+library(multcomp)
+
+# Fit the post-hoc test with Tukey's adjustment
+posthoc_feed <- glht(glm_SGR, linfct = mcp(Feed = "Tukey"))
+
+# Summary of the post-hoc comparisons
+summary(posthoc_feed)
+
+# plot SGR vs feed
 #plot
 library(ggpubr)
 survival <- ggboxplot(
@@ -75,92 +65,129 @@ survival <- ggboxplot(
         axis.ticks.x = element_blank()
   )
 survival
-
+set_palette(survival, scico(4, palette = "berlin"))
+Crayfish_feed_difference$Feed <- factor(Crayfish_feed_difference$Feed, levels = c("Fish Faeces", "Pellet", "Wheat", "Wheat+Fish Faeces"))
 plot <- ggboxplot(
   Crayfish_feed_difference, 
   x = "Feed", 
-  y = "SGR", 
-  color = "Feed") +
+  y = "SGR",
+  ylab = "Crayfish SGR",
+  color = "Feed",
+  add = "jitter",
+  add.params = list(size = 3, alpha = 0.7)) +
   theme(legend.title = element_blank(),
         axis.text.x = element_blank(),
         axis.ticks.x = element_blank()
-  )
+  ) +
+  ylim(0,0.6) +
+ geom_signif(comparisons = list(c("Fish Faeces", "Pellet")), 
+                annotations = "*", 
+                y_position = 0.55,  # Adjust based on your data
+                tip_length = 0.05,
+                size = 0.5)
   
+plot
+library(scico)
+pubplot <- set_palette(plot, scico(4, palette = "berlin"))
+pubplot
 
-annotations <- data.frame(
-    x = 1,      # x-coordinate of the first group
-    xend = 2,   # x-coordinate of the second group
-    y = 0.55,    # y-coordinate for the annotation
-    label = "*" # Significance label
-  )
-plot1 <- plot + geom_segment(data = annotations, aes(x = x, xend = xend, y = y, yend = y), color = "black") +
-  geom_text(data = annotations, aes(x = (x + xend) / 2, y = y, label = label), vjust = -0.5, size = 5) +
-  ylim(0, 0.65)
-plot1
-
-plot2 <- ggscatter(Crayfish_feed_difference, 
-                   x = "Carbon", 
-                   y = "SGR", 
-                   color = "Feed", 
-                   title = "GLM: SGR ~ Carbon*", 
-                   add = "reg.line", 
-                   add.params = list(color = "black", fill = "lightgray"), 
-                   conf.int = TRUE) +
-  theme(legend.title = element_blank(),
-        plot.title.position = "panel")
-plot2
-
-plot3 <- ggscatter(Crayfish_feed_difference, 
-                   x = "Nitrogen", 
-                   y = "SGR", 
-                   color = "Feed",
-                   title = "GLM: SGR ~ Nitrogen", 
-                   add = "reg.line", 
-                   add.params = list(color = "black", fill = "lightgray"), conf.int = TRUE) +
-  theme(legend.title = element_blank(),
-        plot.title.position = "panel")
-plot3
-
-combplot <- ggarrange(plot1, plot2, plot3, labels = c("A", "B", "C"), ncol = 3)
-ggsave("experiment1.png", combplot, width = 15, height = 5, dpi = 300)
+ggsave("experiment1 revised.png", pubplot, width = 6, height = 5, dpi = 300, units = "cm", scale = 2.4)
 
 #Experiment 2
 mono_vs_poly <- read_excel("mono vs poly.xlsx")
 View(mono_vs_poly)
 
-# glm model fish SGR predicted by treatment and survival
-model_fish <- glm(Fish_SGR ~ Fish_Survival + Treat_Fish, data = mono_vs_poly, family = gaussian)
-summary(model_fish)
-# test for siginificant predictor
-library(car)
-Anova(model_fish)
+# normality test
+shapiro.test(mono_vs_poly$Fish_SGR)
+shapiro.test(mono_vs_poly$Fish_Survival)
 
-# glm model crayfish SGR predicted by treatment, survival, moulting and chelipeds losses
-model_crayfish <- glm(Crayfish_SGR ~ Crayfish_survival + Treat_Crayfish + Crayfish_moulting + Crayfish_cheliped_loss, data = mono_vs_poly, family = gaussian)
-summary(model_crayfish)
-# test for significant predictor
-Anova(model_crayfish)
+# equal variance test
+leveneTest(Fish_SGR ~ Treat_Fish, data = mono_vs_poly)
+leveneTest(Fish_Survival ~ Treat_Fish, data = mono_vs_poly)
 
-# search for correlation in total gain and mortality between fish and crayfish in polyculture
-Crayfish_vs_fish_tank_gain <- read_excel("~/OneDrive/RPTU PolyRAS/Previous work unpublished/Revision/Data processing/Crayfish vs fish tank gain.xlsx")
-View(Crayfish_vs_fish_tank_gain) 
-library(scales)
-interactplot <- ggscatter(Crayfish_vs_fish_tank_gain, x = "Fish_survival", y = "Crayfish_survival", 
-                          color = "Treatment", add = "reg.line", 
-                          add.params = list(color = "pink", fill = "lightgray"), conf.int = TRUE) +
-  scale_x_continuous(labels = scales::percent) + 
-  scale_y_continuous(labels = scales::percent) +
-  labs(x = "Fish survival", y = "Crayfish survival")
-interactplot
-ggsave("experiment2interaction.png",interactplot, height = 5, width = 6, dpi = 300) 
-# glm model to compare the prediction between AC and ACsep
-model_polyculture_SGR <- glm(Fish_SGR ~ Crayfish_SGR/Treatment, data = Crayfish_vs_fish_tank_gain)
-summary(model_polyculture_SGR)
+# glm analysis of fish SGR
+mono_vs_poly$Treat_Fish <- as.factor(mono_vs_poly$Treat_Fish)
+glm_fish_poly <- glm(Fish_SGR ~ Treat_Fish, data = mono_vs_poly)
+summary(glm_fish_poly)
+Anova(glm_fish_poly)
+posthoc_poly <- glht(glm_fish_poly, linfct = mcp(Treat_Fish = "Tukey"))
+summary(posthoc_poly)
 
-model_polyculture_survival <- glm(Fish_survival ~ Crayfish_survival/Treatment, data = Crayfish_vs_fish_tank_gain)
-summary(model_polyculture_survival)
-# test for significant predictor
-Anova(model_polyculture_SGR)
-Anova(model_polyculture_survival)
+fishgrowth <- ggboxplot(data = mono_vs_poly, 
+                        x = "Treat_Fish", 
+                        y = "Fish_SGR", 
+                        xlab = "Treatment",
+                        ylab = "Whitefish SGR",
+                        color = "Treat_Fish",
+                        add = "jitter",
+                        add.params = list(fill = "Treat_Fish", size = 3, alpha = 0.7)) +
+  theme(legend.title = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+                        ylim(0, 1.3) 
+sigplot <- fishgrowth + geom_signif(comparisons = list(c("monoculture", "separated")), 
+                         annotations = "*", 
+                         y_position = 1.25,  # Adjust based on your data
+                         tip_length = 0.1,
+                        size = 0.5)
+sigplot
+library(scico)
+pubplot <- set_palette(sigplot, scico(3, palette = "roma"))
+pubplot
+ggsave("whitefish SGR polyculture.png", pubplot, width = 6, height = 5, dpi = 300, units = "cm", scale = 2.4)
+
+#glmm model individual fish survival predicted by treatment
+mono_vs_poly_ind_sur <- read_excel("mono vs poly individual survival.xlsx")
+View(mono_vs_poly_ind_sur)
+
+library(lme4)
+mono_vs_poly_ind_sur$Treat_Fish <- as.factor(mono_vs_poly_ind_sur$Treat_Fish)
+glmm_fish_sur <- glmer(Live_Fish ~ Treat_Fish + (1 | Tank_Fish), data = mono_vs_poly_ind_sur, family = binomial)
+# glmer failed due to all 1s in two treatments, data were discussed in descriptive way
+
+ggboxplot(mono_vs_poly_ind_sur,
+          x = "Treat_Fish",
+          y = "Live_Fish",
+          fill = "Treat_Fish",
+          add = "jitter",
+          color = "Treat_Fish",
+          add.params = list(size = 3, alpha = 0.7))
+
+# glmer analysis of individual crayfish survival
+crayfish_ind_sur$Treat_Crayfish <- as.factor(crayfish_ind_sur$Treat_Crayfish)
+glmm_ind_crayfish_sur <- glmer(Live_Crayfish ~ Treat_Crayfish + (1 | Tank_Crayfish) , data = crayfish_ind_sur,  family = binomial(link = "logit"))
+summary(glmm_ind_crayfish_sur)
+Anova(glmm_ind_crayfish_sur)
+
+# crayfish growth
+separated_vs_nonseparated <- read_excel("separated vs nonseparated.xlsx")
+View(separated_vs_nonseparated)
+#normality
+shapiro.test(separated_vs_nonseparated$Crayfish_SGR)
+
+glm_crayfish_SGR_poly <- glm(Crayfish_SGR ~ Treat_Crayfish, data = separated_vs_nonseparated)
+summary(glm_crayfish_SGR_poly)
+Anova(glm_crayfish_SGR_poly)
+
+ggboxplot(separated_vs_nonseparated,
+          x = "Treat_Crayfish",
+          y = "Crayfish_SGR",
+          fill = "Treat_Crayfish",
+                  add = "jitter") +
+  ylim(0,0.75)
+# crayfish survival
+crayfish_ind_sur <- read_excel("mono vs poly individual crayfish survival.xlsx")
+View(crayfish_ind_sur)
+
+glmm_crayfish_ind_sur <- glmer(Live_Crayfish ~ Treat_Crayfish + (1 | Tank_Crayfish), data = crayfish_ind_sur, family = binomial(link = "logit"))
+summary(glmm_crayfish_ind_sur)
+Anova(glmm_crayfish_ind_sur)
+
+ggboxplot(separated_vs_nonseparated,
+          x = "Treat_Crayfish",
+          y = "Crayfish_survival",
+          fill = "Treat_Crayfish",
+          add = "jitter") +
+  ylim(0,1)
 
 
